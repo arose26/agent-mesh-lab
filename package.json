@@ -1,0 +1,21 @@
+{
+  "name": "agent-mesh-lab",
+  "version": "0.1.0",
+  "description": "Event-driven multi-agent orchestration: agents as event consumers on a wildcard topic bus, with sagas, scatter-gather, DLQs, HITL gates, and causal tracing.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Kole Harvey",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "demo": "node dist/examples/order-mesh.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

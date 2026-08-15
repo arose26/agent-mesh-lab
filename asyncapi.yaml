@@ -1,0 +1,237 @@
+asyncapi: "2.6.0"
+info:
+  title: Order Mesh
+  version: 0.1.0
+  description: >
+    Event contract for the example order-processing mesh
+    (src/examples/order-mesh.ts). Agents are event consumers on a
+    hierarchical wildcard topic bus; every message is an envelope carrying
+    correlation and causation ids so any flow can be reconstructed as a
+    causal tree.
+  license:
+    name: MIT
+
+defaultContentType: application/json
+
+channels:
+  orders/new:
+    description: Entry point. A new order arrives from the outside world.
+    publish:
+      operationId: receiveNewOrder
+      summary: Consumed by OrderIntake.
+      message:
+        $ref: "#/components/messages/Order"
+
+  orders/received:
+    description: Order accepted into the mesh.
+    subscribe:
+      operationId: orderReceived
+      summary: Published by OrderIntake; consumed by FraudCheck.
+      message:
+        $ref: "#/components/messages/Order"
+
+  fraud/check:
+    description: >
+      Scatter-gather request channel. FraudCheck fans a request out to every
+      subscribed heuristic (FraudRules, FraudVelocity) and gathers replies on
+      the unique topic named in the replyTo header, with a quorum and a
+      timeout.
+    subscribe:
+      operationId: fraudCheckRequested
+      message:
+        $ref: "#/components/messages/FraudCheckRequest"
+
+  orders/scored:
+    description: Order annotated with the gathered fraud score.
+    subscribe:
+      operationId: orderScored
+      summary: Published by FraudCheck; consumed by Enrichment.
+      message:
+        $ref: "#/components/messages/ScoredOrder"
+
+  orders/enriched:
+    description: Order enriched with customer tier.
+    subscribe:
+      operationId: orderEnriched
+      summary: Published by Enrichment; consumed by Router.
+      message:
+        $ref: "#/components/messages/ScoredOrder"
+
+  orders/approval/needed:
+    description: >
+      High-value orders detour here. The HighValueApproval gate parks the
+      envelope and publishes approvals/requested; the flow resumes only when
+      a decision arrives on approvals/{orderId} (or times out and escalates).
+    subscribe:
+      operationId: approvalNeeded
+      message:
+        $ref: "#/components/messages/ScoredOrder"
+
+  approvals/requested:
+    description: A human decision is awaited for a parked envelope.
+    subscribe:
+      operationId: approvalRequested
+      message:
+        $ref: "#/components/messages/ApprovalRequest"
+
+  approvals/{orderId}:
+    description: Human (or delegated agent) decision for one parked order.
+    parameters:
+      orderId:
+        schema:
+          type: string
+    publish:
+      operationId: approvalDecision
+      message:
+        $ref: "#/components/messages/ApprovalDecision"
+
+  orders/approval/escalated:
+    description: No decision arrived within the gate timeout.
+    subscribe:
+      operationId: approvalEscalated
+      message:
+        $ref: "#/components/messages/ScoredOrder"
+
+  orders/ready:
+    description: Approved (or low-value) orders ready for fulfillment.
+    subscribe:
+      operationId: orderReady
+      message:
+        $ref: "#/components/messages/ScoredOrder"
+
+  orders/fulfilled:
+    description: Fulfillment saga completed.
+    subscribe:
+      operationId: orderFulfilled
+      message:
+        $ref: "#/components/messages/ScoredOrder"
+
+  dlq/{originalTopic}:
+    description: >
+      Dead-letter channel. Envelopes whose handler exhausted its retry budget
+      are republished here with error metadata headers (x-error, x-retries,
+      x-failed-agent, x-original-topic).
+    parameters:
+      originalTopic:
+        schema:
+          type: string
+    subscribe:
+      operationId: deadLetter
+      message:
+        $ref: "#/components/messages/DeadLetter"
+
+components:
+  messages:
+    Order:
+      name: Order
+      title: Order
+      correlationId:
+        $ref: "#/components/correlationIds/meshCorrelation"
+      payload:
+        $ref: "#/components/schemas/Order"
+
+    ScoredOrder:
+      name: ScoredOrder
+      title: Scored order
+      correlationId:
+        $ref: "#/components/correlationIds/meshCorrelation"
+      payload:
+        $ref: "#/components/schemas/ScoredOrder"
+
+    FraudCheckRequest:
+      name: FraudCheckRequest
+      title: Fraud check request (scatter-gather)
+      headers:
+        type: object
+        required: [replyTo]
+        properties:
+          replyTo:
+            type: string
+            description: Unique gather topic for replies.
+      payload:
+        $ref: "#/components/schemas/Order"
+
+    ApprovalRequest:
+      name: ApprovalRequest
+      title: Approval requested (HITL)
+      payload:
+        type: object
+        required: [id, topic]
+        properties:
+          id:
+            type: string
+            description: Approval id (the order id).
+          topic:
+            type: string
+            description: Topic of the parked envelope.
+
+    ApprovalDecision:
+      name: ApprovalDecision
+      title: Approval decision (HITL)
+      headers:
+        type: object
+        properties:
+          x-approver:
+            type: string
+      payload:
+        type: object
+        required: [approved]
+        properties:
+          approved:
+            type: boolean
+
+    DeadLetter:
+      name: DeadLetter
+      title: Dead-lettered envelope
+      headers:
+        type: object
+        required: [x-error, x-retries, x-failed-agent, x-original-topic]
+        properties:
+          x-error:
+            type: string
+          x-retries:
+            type: string
+          x-failed-agent:
+            type: string
+          x-original-topic:
+            type: string
+      payload:
+        description: The original envelope payload, unchanged.
+
+  schemas:
+    Order:
+      type: object
+      required: [orderId, customerId, total, items]
+      properties:
+        orderId:
+          type: string
+        customerId:
+          type: string
+        total:
+          type: number
+        items:
+          type: array
+          items:
+            type: string
+
+    ScoredOrder:
+      allOf:
+        - $ref: "#/components/schemas/Order"
+        - type: object
+          properties:
+            fraudScore:
+              type: number
+              minimum: 0
+              maximum: 1
+            tier:
+              type: string
+              enum: [standard, gold]
+
+  correlationIds:
+    meshCorrelation:
+      description: >
+        Every envelope carries a correlationId (the root envelope's id,
+        propagated to all children) and a causationId (the immediate parent's
+        id). Together they let traceOf(correlationId) rebuild the full causal
+        tree of a flow.
+      location: $message.header#/correlationId
