@@ -1,4 +1,4 @@
-# agent-mesh-lab
+# Bus First Multi-Agent System
 
 **Event-driven multi-agent orchestration: agents as event consumers on a
 wildcard topic bus, with sagas, scatter-gather, dead-letter queues,
